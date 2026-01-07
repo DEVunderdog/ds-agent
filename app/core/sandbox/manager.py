@@ -1,218 +1,134 @@
 import io
 import tarfile
-import structlog
 import uuid
+import structlog
 import time
-from requests.exceptions import RequestException
-from docker.errors import DockerException, APIError
-from app.core.sandbox.config import SANDBOX_PREFIX_NAME, DOCKER_WORKDIR, PROFILES
-from app.core.sandbox.docker import ResourceLimits, DockerClientManager
-from app.core.sandbox.exceptions import DockerError
+from typing import List, Dict, Optional, Union, Any
+from app.core.sandbox.config import SandboxConfig, Profile
+from app.core.sandbox.docker_client import DockerService
+from app.core.sandbox.exceptions import SandboxError
 
 logger = structlog.get_logger(__name__)
 
 
-class _WorkingDirectory(object):
-    def __init__(self, volume):
-        self.volume = volume
-
-    def __repr__(self):
-        return "<WorkingDirectory: {}>".format(self.volume)
-
-
-class Sandbox:
-    def __init__(self, id_, container, realtime_limit=None):
-        self.id_ = id_
+class SandboxSession:
+    def __init__(
+        self,
+        container_id: str,
+        container,
+        docker_service: DockerService,
+        workdir: str,
+    ):
+        self.id = container_id
         self.container = container
-        self.realtime_limit = realtime_limit
+        self.docker_service = docker_service
+        self.workdir = workdir
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
-        # destroy(self)
-        pass
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.destroy()
 
-    def __repr(self):
-        return "<Sandbox: {} container={}>".format(self.id_, self.container.short_id)
+    def destroy(self):
+        logger.info("destroying sandbox", id=self.id)
+        self.docker_service.cleanup_container(self.container)
+
+    def write_files(self, files: List[Dict[str, Union[str, bytes]]]):
+        tar_stream = io.BytesIO()
+
+        with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+            for f in files:
+                name = f["name"]
+                content = f["content"]
+
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+
+                info = tarfile.TarInfo(name=name)
+                info.size = len(content)
+                info.mtime = int(time.time())
+                tar.addfile(info, io.BytesIO(content))
+
+        tar_stream.seek(0)
+        self.docker_service.put_archive(
+            self.container, self.workdir, tar_stream.getvalue()
+        )
+
+    def run(
+        self, stdin: Optional[Union[str, bytes]] = None, timeout: int = 10
+    ) -> Dict[str, Any]:
+        if isinstance(stdin, str):
+            stdin = stdin.encode("utf-8")
+
+        result = self.docker_service.run_with_timeout(
+            self.container,
+            stdin=stdin,
+            timeout=timeout,
+        )
+
+        result["stdout_err"] = result["stdout"].decode("utf-8", errors="replace")
+        result["stdout_err"] = result["stderr"].decode("utf-8", errors="replace")
+
+        return result
 
 
 class SandboxManager:
-
-    def __init__(self, client: DockerClientManager):
-        self.docker_client_manager = client
-
-    def _create_sandbox_container(
-        self,
-        sandbox_id,
-        image,
-        command,
-        limits: ResourceLimits,
-        workdir=None,
-        user=None,
-        read_only=False,
-        network_disabled=True,
-    ):
-        name = SANDBOX_PREFIX_NAME + sandbox_id
-
-        mem_limit = str(limits["memory"]) + "m"
-
-        volumes = (
-            {
-                workdir.volume: {
-                    "bind": DOCKER_WORKDIR,
-                    "mode": "rw",
-                }
-            }
-            if workdir
-            else None
-        )
-
-        ulimits = self.docker_client.create_ulimits(limits)
-
-        environment = None
-
-        log = logger.bind(sandbox_id=sandbox_id)
-
-        log.info(
-            "creating a new sandbox container",
-            name=name,
-            image=image,
-            command=command,
-            limits=limits,
-            workdir=workdir,
-            user=user,
-            read_only=read_only,
-            network_disabled=network_disabled,
-        )
-
-        try:
-            c = self.docker_client.client.containers.create(
-                image,
-                command=command,
-                user=user,
-                stdin_open=True,
-                environment=environment,
-                network_disabled=network_disabled,
-                name=name,
-                working_dir=DOCKER_WORKDIR,
-                volumes=volumes,
-                read_only=read_only,
-                mem_limit=mem_limit,
-                memswap_limit=mem_limit,
-                ulimits=ulimits,
-                pids_limit=limits["processes"],
-                log_config={"type": "none"},
-            )
-
-        except (RequestException, DockerException) as e:
-            if isinstance(e, APIError) and e.response.status_code == 49:
-                log.info("the container with give name is already created", name=name)
-                c = {"id": name}
-            else:
-                log.exception("failed to create a sandbox container")
-                raise DockerError(str(e))
-
-        log.info("sandbox container created", container=c)
-
-        return c
-
-    def _write_files(container, files):
-        docker_client_manager = DockerClientManager(retry_status_forcelist=(404, 500))
-        docker_client = docker_client_manager.get_client()
-
-        filtered_filenames = [file["name"] for file in files if "name" in file]
-
-        log = logger.bind(files=filtered_filenames, container=container)
-        log.info("writing files to working directory in container")
-
-        mtime = int(time.time())
-
-        files_written = []
-
-        tarball_fileobj = io.BytesIO()
-
-        with tarfile.open(fileobj=tarball_fileobj, mode="w") as tarball:
-            for file in files:
-                if not file.get("name") or not isinstance(file["name"], str):
-                    continue
-                content = file.get("content", b"")
-                file_info = tarfile.TarInfo(name=file["name"])
-                file_info.size = len(content)
-                file_info.mtime = mtime
-                tarball.addfile(file_info, fileobj=io.BytesIO(content))
-                files_written.append(file["name"])
-
-        try:
-            docker_client.api.put_archive(
-                container.id, DOCKER_WORKDIR, tarball_fileobj.getvalue()
-            )
-        except (RequestException, DockerException) as e:
-            log.exception(
-                "failed to extract an archive of files to the working directory in the container"
-            )
-            raise DockerError(str(e))
-        log.info(
-            "successfully written files to the working directory",
-            files_written=files_written,
-        )
+    def __init__(self, config: SandboxConfig):
+        self.config = config
+        self.docker = DockerService(config)
 
     def create(
         self,
-        profile_name,
-        command=None,
-        files=None,
-        limits=None,
-        workdir=None,
-    ):
-        if profile_name not in PROFILES:
-            raise ValueError("profile not found: {0}".format(profile_name))
+        profile_name: str,
+        command_override: Optional[str] = None,
+        files: Optional[List[Dict]] = None,
+    ) -> SandboxSession:
 
-        if workdir is not None and not isinstance(workdir, _WorkingDirectory):
-            raise ValueError(
-                "invalid 'workdir', it should be created using 'working_directory' context manager"
-            )
-
+        profile = self.config.get_profile(profile_name)
         sandbox_id = str(uuid.uuid4())
+        name = f"{self.config.sandbox_prefix}{sandbox_id}"
 
-        profile = PROFILES[profile_name]
+        cmd = command_override or profile.command
 
-        command = command or profile.command or "true"
-        command_list = ["/bin/sh", "-c", command]
+        docker_cmd = ["/bin/sh", "-c", cmd]
 
-        limits = self.docker_client.merge_limits_defaults(limits=limits)
+        logger.info("Creating Sandbox", name=name, profile=profile_name)
 
-        c = self._create_sandbox_container(
-            sandbox_id=sandbox_id,
-            image=profile.docker_image,
-            command=command_list,
-            limits=limits,
-            workdir=workdir,
+        container = self.docker.create_container(
+            image=profile.image,
+            command=docker_cmd,
+            name=name,
             user=profile.user,
-            read_only=profile.read_only,
+            working_dir=self.config.workdir,
             network_disabled=profile.network_disabled,
+            read_only=profile.read_only,
+            stdin_open=True,  # Interactive mode support
+            limits={
+                "memory": self.config.default_memory_mb,
+                # Realtime limit is handled by the python controller,
+                # but we set docker limits too
+            },
+        )
+
+        session = SandboxSession(
+            sandbox_id, container, self.docker, self.config.workdir
         )
 
         if files:
-            self._write_files(container=c, files=files)
+            session.write_files(files)
 
-    def start(sandbox, stdin=None):
-        if stdin:
-            if not isinstance(stdin, (bytes, str)):
-                raise TypeError("'stdin' must be bytes or str")
+        return session
 
-            if isinstance(stdin, str):
-                stdin = stdin.encode()
-
-        log = logger.bind(sandbox=sandbox)
-        log.info("starting the sandbox", stdin_size=len(stdin or ""))
-        result = {
-            "exit_code": None,
-            "stdout": b"",
-            "stderr": b"",
-            "duration": None,
-            "timeout": False,
-            "oom_killed": False,
-        }
-
-        
+    def run_ephemeral(
+        self,
+        profile_name: str,
+        command: str,
+        files: Optional[List] = None,
+        stdin: Optional[str] = None,
+    ) -> Dict:
+        """
+        One-shot execution: Create -> Run -> Destroy.
+        """
+        with self.create(profile_name, command_override=command, files=files) as box:
+            return box.run(stdin=stdin, timeout=self.config.timeout)

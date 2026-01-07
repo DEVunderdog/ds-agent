@@ -1,51 +1,38 @@
-DOCKER_MAX_READ_RETRIES = 5
-DOCKER_URL = None
-DOCKER_TIMEOUT = 30
-DOCKER_MAX_TOTAL_RETRIES = 9
-DOCKER_MAX_CONNECT_RETRIES = 5
-DOCKER_BACKOFF_FACTOR = 0.2
-DOCKER_WORKDIR = "sandbox"
-
-SANDBOX_PREFIX_NAME = "agentic-sandbox"
-
-CPU_TO_REAL_TIME_FACTOR = 5
-
-DEFAULT_USER = "root"
-IS_CONFIGURED = False
-PROFILES = {}
-DOCKER_URL = None
+from dataclasses import dataclass, field
+from typing import Dict, Optional
 
 
-class Profile(object):
-    def __init__(
-        self,
-        name,
-        docker_image,
-        command=None,
-        user=DEFAULT_USER,
-        read_only=False,
-        network_disabled=True,
-    ):
-        self.name = name
-        self.docker_image = docker_image
-        self.command = command
-        self.user = user
-        self.read_only = read_only
-        self.network_disabled = network_disabled
+@dataclass
+class Profile:
+    name: str
+    image: str
+    command: str
+    user: str = "root"
+    ready_only: bool = False
+    network_disabled: bool = True
+
+    env: Dict[str, str] = field(default_factory=dict)
 
 
-def configure(profiles=None, docker_url=None):
-    global IS_CONFIGURED, PROFILES, DOCKER_URL
+@dataclass
+class SandboxConfig:
+    docker_url: Optional[str] = None
+    timeout: int = 30
+    max_retries: int = 5
+    workdir: str = "/sandbox"
+    sandbox_prefix: str = "agent-sandbox-"
+    cpu_to_realtime_factor: int = 5
 
-    IS_CONFIGURED = True
+    default_memory_mb: int = 128
+    default_cpu_period: int = 100000
+    default_cpu_quota: int = 50000
 
-    if isinstance(profiles, dict):
-        profiles_map = {
-            name: Profile(name, **profile_kwargs)
-            for name, profile_kwargs in profiles.items()
-        }
-    else:
-        profiles_map = {profile.name: profile for profile in profiles or []}
+    profiles: Dict[str, Profile] = field(default_factory=dict)
 
-    PROFILES.update(profiles_map)
-    DOCKER_URL = docker_url
+    def add_profile(self, profile: Profile):
+        self.profiles[profile.name] = profile
+
+    def get_profile(self, name: str) -> Profile:
+        if name not in self.profiles:
+            raise ValueError(f"profile '{name}' not configured")
+        return self.profiles[name]

@@ -1,3 +1,4 @@
+import os
 import struct
 import io
 import tarfile
@@ -63,14 +64,35 @@ def create_archive(files: List[Dict[str, Union[str, bytes]]]) -> bytes:
     tar_stream.seek(0)
     return tar_stream.getvalue()
 
+
 def extract_file_from_archive(tar_bytes: bytes, filename: str) -> bytes:
     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r") as tar:
         try:
             member = tar.getmember(filename)
             if not member.isfile():
                 raise FileNotFoundError(f"{filename} is not a regular file")
-            
+
             f = tar.extractfile(member)
             return f.read() if f else b""
         except KeyError:
             raise FileNotFoundError(f"file {filename} not found in archive")
+
+
+def create_archive_from_path(file_paths: List[Tuple[str, str]]) -> bytes:
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        for local_path, remote_name in file_paths:
+            if not os.path.exists(local_path):
+                raise FileNotFoundError(f"local file not found: {local_path}")
+
+            with open(local_path, "rb") as f:
+                data = f.read()
+
+            info = tarfile.TarInfo(name=remote_name)
+            info.size = len(data)
+            info.mtime = int(time.time())
+
+            tar.addfile(info, io.BytesIO(data))
+
+    tar_stream.seek(0)
+    return tar_stream.getvalue()

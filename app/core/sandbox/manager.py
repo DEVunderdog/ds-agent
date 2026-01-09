@@ -1,134 +1,133 @@
-import io
-import tarfile
 import uuid
 import structlog
-import time
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Union, Optional, Any
+
 from app.core.sandbox.config import SandboxConfig, Profile
 from app.core.sandbox.docker_client import DockerService
-from app.core.sandbox.exceptions import SandboxError
+from app.core.sandbox.utility import create_archive, extract_file_from_archive
+from app.core.sandbox.image_manager import ImageManager
 
 logger = structlog.get_logger(__name__)
 
 
-class SandboxSession:
+class Sandbox:
     def __init__(
         self,
-        container_id: str,
-        container,
-        docker_service: DockerService,
-        workdir: str,
+        config: SandboxConfig,
+        service: DockerService,
+        profile_name: str,
     ):
-        self.id = container_id
-        self.container = container
-        self.docker_service = docker_service
-        self.workdir = workdir
+        self.config = config
+        self.service = service
+        self.profile = config.get_profile(profile_name)
+        self.id = str(uuid.uuid4())
+        self.container_name = f"{config.sandbox_prefix}{self.id}"
+        self.container = None
+        self._is_alive = False
+
+    def start(self):
+        logger.info("starting sandbox", id=self.id, profile=self.profile.name)
+
+        self.container = self.service.spawn_container(
+            name=self.container_name,
+            profile=self.profile,
+            workdir=self.config.workdir,
+        )
+
+        self._is_alive = True
+
+    def stop(self):
+        if self.container:
+            logger.info("stopping sandbox", id=self.id)
+            self.service.remove_container(self.container)
+            self._is_alive = False
 
     def __enter__(self):
+        self.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.destroy()
-
-    def destroy(self):
-        logger.info("destroying sandbox", id=self.id)
-        self.docker_service.cleanup_container(self.container)
+        self.stop()
 
     def write_files(self, files: List[Dict[str, Union[str, bytes]]]):
-        tar_stream = io.BytesIO()
+        if not self._is_alive:
+            raise RuntimeError("sandbox is not running")
 
-        with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-            for f in files:
-                name = f["name"]
-                content = f["content"]
+        logger.debug("writing files", count=len(files))
 
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
+        tar_data = create_archive(files)
+        self.service.copy_to(self.container, self.config.workdir, tar_data)
 
-                info = tarfile.TarInfo(name=name)
-                info.size = len(content)
-                info.mtime = int(time.time())
-                tar.addfile(info, io.BytesIO(content))
+    def read_file(self, relative_path: str) -> bytes:
+        if not self._is_alive:
+            raise RuntimeError("sandbox is not running")
 
-        tar_stream.seek(0)
-        self.docker_service.put_archive(
-            self.container, self.workdir, tar_stream.getvalue()
-        )
+        full_path = f"{self.config.workdir}/{relative_path}"
+        tar_data = self.service.copy_from(self.container, full_path)
 
-    def run(
-        self, stdin: Optional[Union[str, bytes]] = None, timeout: int = 10
+        filename = relative_path.split("/")[-1]
+        return extract_file_from_archive(tar_data, filename)
+
+    def exec(
+        self,
+        command: str,
+        stdin: Optional[str] = None,
+        timeout: Optional[int] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        if isinstance(stdin, str):
-            stdin = stdin.encode("utf-8")
+        if not self._is_alive:
+            raise RuntimeError("sandbox is not running")
 
-        result = self.docker_service.run_with_timeout(
+        timeout = timeout or self.config.timeout
+
+        cmd_list = ["/bin/sh", "-c", command]
+        stdin_bytes = stdin.encode("utf-8") if stdin else None
+
+        result = self.service.exec_command(
             self.container,
-            stdin=stdin,
+            cmd=cmd_list,
+            stdin=stdin_bytes,
             timeout=timeout,
+            env=env,
         )
 
-        result["stdout_err"] = result["stdout"].decode("utf-8", errors="replace")
-        result["stdout_err"] = result["stderr"].decode("utf-8", errors="replace")
-
-        return result
+        return {
+            "stdout": result["stdout"].decode("utf-8", errors="replace"),
+            "stderr": result["stderr"].decode("utf-8", errors="replace"),
+            "exit_code": result["exit_code"],
+            "timed_out": result["timed_out"],
+            "duration": result["duration"],
+        }
 
 
 class SandboxManager:
-    def __init__(self, config: SandboxConfig):
+    def __init__(
+        self,
+        config: SandboxConfig,
+    ):
         self.config = config
-        self.docker = DockerService(config)
+        self.docker_service = DockerService(config)
 
-    def create(
-        self,
-        profile_name: str,
-        command_override: Optional[str] = None,
-        files: Optional[List[Dict]] = None,
-    ) -> SandboxSession:
+        self.image_manager = ImageManager(config, self.docker_service)
 
-        profile = self.config.get_profile(profile_name)
-        sandbox_id = str(uuid.uuid4())
-        name = f"{self.config.sandbox_prefix}{sandbox_id}"
+    def register_default_profiles(self):
 
-        cmd = command_override or profile.command
-
-        docker_cmd = ["/bin/sh", "-c", cmd]
-
-        logger.info("Creating Sandbox", name=name, profile=profile_name)
-
-        container = self.docker.create_container(
-            image=profile.image,
-            command=docker_cmd,
-            name=name,
-            user=profile.user,
-            working_dir=self.config.workdir,
-            network_disabled=profile.network_disabled,
-            read_only=profile.read_only,
-            stdin_open=True,  # Interactive mode support
-            limits={
-                "memory": self.config.default_memory_mb,
-                # Realtime limit is handled by the python controller,
-                # but we set docker limits too
-            },
+        ds_profile = Profile(
+            name="data-science",
+            image="sandbox-ds:v1",
+            user="sandbox",
+            base_image="python:3.12-slim",
+            system_packages=["build-essential", "git"],
+            python_packages=["numpy", "pandas", "scikit-learn"],
+            mem_limit_mb=512,
         )
 
-        session = SandboxSession(
-            sandbox_id, container, self.docker, self.config.workdir
-        )
+        self.config.add_profiles(ds_profile)
 
-        if files:
-            session.write_files(files)
+    def ensure_image(self, profile_name: str):
+        self.image_manager.build_profile(profile_name)
 
-        return session
+    def create(self, profile_name: str) -> Sandbox:
+        self.ensure_image(profile_name)
 
-    def run_ephemeral(
-        self,
-        profile_name: str,
-        command: str,
-        files: Optional[List] = None,
-        stdin: Optional[str] = None,
-    ) -> Dict:
-        """
-        One-shot execution: Create -> Run -> Destroy.
-        """
-        with self.create(profile_name, command_override=command, files=files) as box:
-            return box.run(stdin=stdin, timeout=self.config.timeout)
+        return Sandbox(self.config, self.docker_service, profile_name)

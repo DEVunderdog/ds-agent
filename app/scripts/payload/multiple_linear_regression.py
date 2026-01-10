@@ -78,7 +78,7 @@ class MultipleLinearRegression:
         x: Any,
         y: Any,
         cv: int = 5,
-    ):
+    ) -> CrossValidateEval:
         results = cross_validate(
             model=model,
             X=x,

@@ -2,6 +2,13 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from typing import TypedDict, List, Any
+from enum import StrEnum
+
+
+class TargetProblemType(StrEnum):
+    AUTO = "auto"
+    CLASSIFICATION = "classification"
+    REGRESSION = "regression"
 
 
 class DatasetShape(TypedDict):
@@ -152,6 +159,22 @@ class AnovaResults(TypedDict):
     f_statistic: float
     p_value: float
     significant: bool
+
+
+class FeatureTargetInteraction(TypedDict):
+    feature: str
+    target: str
+    interaction_type: str
+    score: float
+    p_value: float
+    is_significant: bool
+    effect_size: float
+
+
+class TargetAnalysis(TypedDict):
+    target_column: str
+    problem_type: str
+    interactions: List[FeatureTargetInteraction]
 
 
 class RelationshipAnalysis(TypedDict):
@@ -418,7 +441,7 @@ class TierOneEda:
 
         return associations
 
-    def calculate_anove(
+    def calculate_anova(
         self, numeric_feature: Any, categorical_target: Any
     ) -> AnovaResults:
 
@@ -441,7 +464,9 @@ class TierOneEda:
         )
 
     def calculate_chi_square(self, categorical_feature, categorical_target):
-        contingency_table = pd.crosstab(self.df[categorical_feature], self.df[categorical_target])
+        contingency_table = pd.crosstab(
+            self.df[categorical_feature], self.df[categorical_target]
+        )
 
         if (
             contingency_table.empty
@@ -462,20 +487,134 @@ class TierOneEda:
     def calculate_eta_squared(self, categorical_feature, numeric_target):
 
         data = self.df[[categorical_feature, numeric_target]].dropna()
-        
+
         grand_mean = data[numeric_target].mean()
-        
+
         groups = data.groupby(categorical_feature)[numeric_target]
-        
-        ssb = sum(groups.count() * (groups.mean() - grand_mean)**2)
-        
-        sst = sum((data[numeric_target] - grand_mean)**2)
-        
+
+        ssb = sum(groups.count() * (groups.mean() - grand_mean) ** 2)
+
+        sst = sum((data[numeric_target] - grand_mean) ** 2)
+
         if sst == 0:
             return 0.0
-            
+
         eta_squared = ssb / sst
-        
+
         return {
             "value": float(eta_squared),
         }
+
+    def target_analysis(
+        self,
+        target_col: str,
+        problem_type: TargetProblemType = TargetProblemType.AUTO,
+    ) -> TargetAnalysis:
+
+        if problem_type == TargetProblemType.AUTO:
+            if pd.api.types.is_numeric_dtype(self.df[target_col]):
+                if self.df[target_col].nunique < 20:
+                    problem_type = TargetProblemType.CLASSIFICATION
+                else:
+                    problem_type = TargetProblemType.REGRESSION
+
+        interactions: List[FeatureTargetInteraction] = []
+
+        numeric_cols = self.df.select_dtypes(include=[np.number]).columns.to_list()
+        categorical_cols = self.df.select_dtypes(
+            include=["object", "category", "bool"]
+        ).columns.to_list()
+
+        if target_col in numeric_cols:
+            numeric_cols.remove(target_col)
+
+        if target_col in categorical_cols:
+            categorical_cols.remove(target_col)
+
+        if problem_type == TargetProblemType.REGRESSION:
+            for col in numeric_cols:
+                valid_data = self.df[[col, target_col]].dropna()
+                if len(valid_data) < 2:
+                    continue
+
+                corr, p_val = stats.pearsonr(valid_data[col], valid_data[target_col])
+
+                interactions.append(
+                    FeatureTargetInteraction(
+                        feature=col,
+                        target=target_col,
+                        interaction_type="pearson_correlation",
+                        score=corr,
+                        p_value=p_val,
+                        is_significant=p_val < 0.05,
+                        effect_size=abs(corr),
+                    )
+                )
+
+            for col in categorical_cols:
+                eta = self.calculate_eta_squared(col, target_col)
+
+                anova = self.calculate_anova(target_col, col)
+
+                if eta and anova:
+                    interactions.append(
+                        FeatureTargetInteraction(
+                            feature=col,
+                            target=target_col,
+                            interaction_type="anova_eta_squared",
+                            score=anova["f_statistic"],
+                            p_value=anova["p_value"],
+                            is_significant=anova["significant"],
+                            effect_size=eta["value"],
+                        )
+                    )
+
+        elif problem_type == TargetProblemType.CLASSIFICATION:
+            for col in numeric_cols:
+                anova_res = self.calculate_anova(col, target_col)
+                if anova_res:
+                    interactions.append(
+                        FeatureTargetInteraction(
+                            feature=col,
+                            target=target_col,
+                            interaction_type="anova",
+                            score=anova_res["f_statistic"],
+                            p_value=anova_res["p_value"],
+                            is_significant=anova_res["significant"],
+                        )
+                    )
+
+            for col in categorical_cols:
+                chi_result = self.calculate_chi_square(col, target_col)
+
+                if chi_result:
+                    n = len(self.df)
+                    min_dim = (
+                        min(self.df[col].nunique(), self.df[target_col].nunique()) - 1
+                    )
+
+                    if min_dim > 0 and n > 0:
+                        cramers_v = np.sqrt(
+                            chi_result["chi2_statistic"] / (n * min_dim)
+                        )
+                    else:
+                        cramers_v = 0.0
+
+                    interactions.append(
+                        FeatureTargetInteraction(
+                            feature=col,
+                            target=target_col,
+                            interaction_type="chi_square",
+                            score=chi_result["chi2_statistic"],
+                            p_value=chi_result["p_value"],
+                            is_significant=chi_result["significant"],
+                            effect_size=cramers_v,
+                        )
+                    )
+        interactions.sort(key=lambda x: x["effect_size"], reverse=True)
+
+        return TargetAnalysis(
+            target_column=target_col,
+            problem_type=problem_type,
+            interactions=interactions,
+        )

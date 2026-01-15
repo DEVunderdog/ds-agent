@@ -1,8 +1,6 @@
 from langgraph.graph import MessagesState
-from typing import Optional, List
+from typing import Optional
 
 
 class AgentState(MessagesState):
-    route_decision: Optional[str] = None
-    independent_feature: str
-    dependent_features: Optional[List[str]] = ["all"]
+    dataset: Optional[str] = None

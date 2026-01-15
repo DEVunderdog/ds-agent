@@ -118,7 +118,7 @@ class SandboxManager:
             user="sandbox",
             base_image="python:3.12-slim",
             system_packages=["build-essential", "git"],
-            python_packages=["numpy", "pandas", "scikit-learn"],
+            python_packages=["numpy", "pandas", "scikit-learn", "orjson"],
             mem_limit_mb=512,
         )
 

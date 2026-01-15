@@ -1,0 +1,7 @@
+DATASET_FILENAME = "dataset.csv"
+EDA_METRICS_FILE = "eda_metrics.json"
+
+MAX_DATASET_FILE_SIZE  = 50
+
+DEV_ORIGINS = []
+PROD_ORIGINS = []

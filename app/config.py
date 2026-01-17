@@ -35,13 +35,19 @@ class Settings(BaseSettings):
     @property
     def DATABASE_URL(self) -> PostgresDsn:
         return MultiHostUrl.build(
-            scheme="postgresql+psycopg",
+            scheme="postgresql+asyncpg",
             username=self.POSTGRES_USER,
             password=self.POSTGRES_PASSWORD,
             host=self.POSTGRES_SERVER,
             port=self.POSTGRES_PORT,
             path=self.POSTGRES_DB,
         )
+
+    JWT_ACCESS_TOKEN_HOURS: int
+    JWT_ISSUER: str
+    JWT_AUDIENCE: str
+
+    ROTATE_ENCRYPTION_KEY: bool = False
 
 
 settings = Settings()

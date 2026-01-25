@@ -1,8 +1,9 @@
 import os
+from typing import Optional
 from enum import StrEnum
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_core import MultiHostUrl
-from pydantic import PostgresDsn, computed_field
+from pydantic import PostgresDsn, computed_field, EmailStr
 
 
 class Environment(StrEnum):
@@ -43,11 +44,35 @@ class Settings(BaseSettings):
             path=self.POSTGRES_DB,
         )
 
+    @computed_field
+    @property
+    def CHECKPOINTER_DATABASE_URL(self) -> str:
+        return str(
+            MultiHostUrl.build(
+                scheme="postgresql",
+                username=self.POSTGRES_USER,
+                password=self.POSTGRES_PASSWORD,
+                host=self.POSTGRES_SERVER,
+                port=self.POSTGRES_PORT,
+                path=self.POSTGRES_DB,
+            )
+        )
+
     JWT_ACCESS_TOKEN_HOURS: int
     JWT_ISSUER: str
     JWT_AUDIENCE: str
 
     ROTATE_ENCRYPTION_KEY: bool = False
+
+    SMTP_TLS: bool = True
+    SMTP_PORT: int = 587
+    SMTP_HOST: Optional[str] = None
+    SMTP_USER: str = "apiKey"
+    SMTP_PASSWORD: Optional[str] = None
+    FROM_EMAIL: Optional[EmailStr] = None
+    FROM_NAME: Optional[str] = None
+
+    PRE_AUTHORIZED_ADMINS: EmailStr
 
 
 settings = Settings()

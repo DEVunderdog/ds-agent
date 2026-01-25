@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Enum as SqlEnum,
     ForeignKey,
+    DateTime,
 )
 from sqlalchemy import TIMESTAMP
 from datetime import datetime
@@ -108,3 +109,29 @@ class ApiKey(Base, TimestampMixin):
 
     user: Mapped["User"] = relationship(back_populates="api_keys")
     encryption_key: Mapped["EncryptionKey"] = relationship(back_populates="api_keys")
+
+
+class DatasetUpload(Base):
+    __tablename__ = "dataset_uploads"
+
+    id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
+    upload_token: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    thread_id: Mapped[Optional[str]] = mapped_column(
+        String(150), index=True, nullable=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    file_path: Mapped[str] = mapped_column(String(512))
+    file_size: Mapped[int] = mapped_column(Integer)
+
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    associated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
+
+    __table_args__ = (Index("idx_thread_active", "thread_id", "is_active"),)

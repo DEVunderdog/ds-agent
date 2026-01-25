@@ -1,9 +1,9 @@
+from typing import Tuple, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy import select
-from app.models.database import VerifiedApiKey, StoreApiKey
+from app.models.database import VerifiedApiKey
 from app.database.schema import User, ApiKey
-from typing import Tuple
 
 
 async def get_api_key_for_verification(
@@ -38,25 +38,18 @@ async def get_api_key_for_verification(
     )
 
 
-async def store_api_key(
-    *, db: AsyncSession, api_key_params: StoreApiKey
-) -> Tuple[ApiKey, str]:
-    try:
-        api_key = ApiKey(
-            user_id=api_key_params.user_id,
-            key_id=api_key_params.key_id,
-            key_credential=api_key_params.key_credential,
-            key_signature=api_key_params.key_signature,
-        )
-        db.add(api_key)
-        stmt = select(User.email).where(User.id == api_key_params.user_id)
-        result = await db.execute(stmt)
+async def fetch_user_api_key(
+    *,
+    db: AsyncSession,
+    user_id: int,
+) -> Optional[Tuple[str, str]]:
 
-        row = result.first()
+    stmt = (
+        select(ApiKey.key_credential, User.email).join(User).where(User.id == user_id)
+    )
 
-        await db.commit()
-        await db.refresh(api_key)
-        return api_key, row.email
-    except Exception as e:
-        await db.rollback()
-        raise RuntimeError(f"failed to store api key: {e}")
+    result = await db.execute(stmt)
+
+    row = result.first()
+
+    return row if row else None

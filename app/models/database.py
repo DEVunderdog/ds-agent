@@ -15,10 +15,23 @@ class VerifiedApiKey(BaseModel):
 class UserClientCreate(UserClientBase):
     pass
 
+
 class ApiKeyCreate(BaseModel):
     key_id: int
     key_credential: bytes
     key_signature: bytes
 
+
 class StoreApiKey(ApiKeyCreate):
     user_id: int
+
+
+class CreateUploadRecord(BaseModel):
+    upload_token: str
+    file_path: str
+    filename: str
+    file_size: str
+
+class AssociateUploadThread(BaseModel):
+    token: str
+    thread_id: str

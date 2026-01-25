@@ -1,7 +1,9 @@
-import structlog
 import io
-from app.core.sandbox.docker_client import DockerService
+
+import structlog
+
 from app.core.sandbox.config import Profile, SandboxConfig
+from app.core.sandbox.docker_client import DockerService
 
 logger = structlog.get_logger(__name__)
 
@@ -73,5 +75,5 @@ class ImageManager:
             logger.info("build successful", tag=tag)
             return tag
         except Exception as e:
-            logger.error("build failed", error=str(e))
+            logger.exception("build failed", error=str(e))
             raise e

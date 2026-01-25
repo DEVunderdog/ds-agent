@@ -64,7 +64,11 @@ async def list_users_db(
     return list(result.scalars().all())
 
 
-async def promote_user_db(*, db: AsyncSession, user_id: int) -> User | None:
+async def promote_user_db(
+    *,
+    db: AsyncSession,
+    user_id: int,
+) -> User | None:
     stmt = select(User).where(User.id == user_id)
     result = await db.execute(stmt)
     user = result.scalars().first()
@@ -73,7 +77,7 @@ async def promote_user_db(*, db: AsyncSession, user_id: int) -> User | None:
         if user.role == Role.ADMIN:
             return user
         else:
-            user.role == Role.ADMIN
+            user.role = Role.ADMIN
             try:
                 await db.commit()
                 return user

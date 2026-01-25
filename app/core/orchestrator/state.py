@@ -3,4 +3,4 @@ from typing import Optional
 
 
 class AgentState(MessagesState):
-    dataset: Optional[str] = None
+    dataset_path: Optional[str] = None

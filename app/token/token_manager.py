@@ -1,19 +1,21 @@
+import base64
+import hashlib
 import hmac
 import secrets
-import base64
 import uuid
-import jwt
-import hashlib
-import structlog
-from typing import Optional, Dict, Tuple
-from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
-from app.token.key_info import KeyInfo
-from app.token.payload import TokenData
+from typing import Dict, Optional, Tuple
+
+import jwt
+import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
 from app.database.connection import db_session
 from app.database.encryption_key import get_active_encryption_key
+from app.token.key_info import KeyInfo
+from app.token.payload import TokenData
 from app.utils.application_timezone import get_current_time
-from app.config import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -161,22 +163,22 @@ class TokenManager:
             )
             return TokenData(**payload)
         except jwt.ExpiredSignatureError:
-            logger.error("token has expired")
+            logger.exception("token has expired")
             raise
         except jwt.InvalidAudienceError:
-            logger.error("invalid token audience")
+            logger.exception("invalid token audience")
             raise
         except jwt.InvalidIssuerError:
-            logger.error("invalid token issuer")
+            logger.exception("invalid token issuer")
             raise
         except jwt.DecodeError as e:
-            logger.error(f"token decode error: {e}")
+            logger.exception(f"token decode error: {e}")
             raise
         except jwt.InvalidTokenError as e:
-            logger.error(f"invalid token: {e}")
+            logger.exception(f"invalid token: {e}")
             raise
         except Exception as e:
-            logger.error(f"invalid token: {e}")
+            logger.exception(f"invalid token: {e}")
             raise
 
     def generate_api_key(self) -> Tuple[str, bytes, bytes, int]:
@@ -230,7 +232,9 @@ class TokenManager:
         try:
             client_signature_bytes = base64.urlsafe_b64decode(signature_b64)
         except Exception as e:
-            logger.error(f"error while decoding signature and providing key hmac: {e}")
+            logger.exception(
+                f"error while decoding signature and providing key hmac: {e}"
+            )
             return False
 
         return hmac.compare_digest(

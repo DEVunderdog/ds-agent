@@ -1,3 +1,9 @@
 venv
-rough.txt
 *.env
+__pycache__/
+*.py[cod]
+*$py.class
+rough.txt
+*.log
+experimental
+*.log.*

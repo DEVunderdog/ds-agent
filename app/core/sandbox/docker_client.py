@@ -1,11 +1,13 @@
-import docker
 import select
 import time
+from typing import Any, Dict, Optional
+
+import docker
 import structlog
-from typing import Dict, Optional, Any
-from docker.models.containers import Container
 from docker.errors import APIError, DockerException, NotFound
-from app.core.sandbox.config import SandboxConfig, Profile
+from docker.models.containers import Container
+
+from app.core.sandbox.config import Profile, SandboxConfig
 from app.core.sandbox.exceptions import DockerOperationsError
 from app.core.sandbox.utility import StreamParser
 
@@ -152,4 +154,4 @@ class DockerService:
         try:
             container.remove(force=True)
         except Exception as e:
-            logger.error(f"error while removing container: {e}")
+            logger.exception(f"error while removing container: {e}")
